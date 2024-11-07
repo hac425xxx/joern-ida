@@ -20,6 +20,8 @@ object MemberAccess {
     (name == Operators.indirectIndexAccess) ||
     (name == Operators.pointerShift) ||
     (name == Operators.getElementPtr)
+    return false
+
   }
 
   def isFieldAccess(name: String): Boolean = {

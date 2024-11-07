@@ -24,7 +24,7 @@ class AstCreationPass(config: Config, cpg: Cpg, parser: HexraysParser)(implicit 
     .determine(
       config.inputPath,
       hexrayAstFileSuffix,
-      ignoredFilesRegex = Option(config.ignoredFilesRegex),
+      ignoredFilesRegex = Option("""^.*\.type\.json$""".r),
       ignoredFilesPath = Option(config.ignoredFiles)
     )
     .toArray

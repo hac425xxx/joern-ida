@@ -80,7 +80,7 @@ object Domain {
   // Used for creating the default constructor.
   val ConstructorMethodName = "__construct"
 
-  final case class HexrayAttributes(ea: Int, treeidx: Int)
+  final case class HexrayAttributes(rva: Int, jsonLine: Int)
 
   object HexrayAttributes {
     val Empty: HexrayAttributes = HexrayAttributes(-1, -1)
@@ -88,9 +88,9 @@ object Domain {
     def apply(json: Value): HexrayAttributes = {
       Try(json("attributes")) match {
         case Success(Obj(attributes)) =>
-          val ea        = attributes("ea").str.toInt
-          val treeindex = attributes("treeindex").str.toInt
-          HexrayAttributes(ea, treeindex)
+          val rva        = attributes("rva").str.toInt
+          val jsonLine = attributes("ea").str.toInt
+          HexrayAttributes(rva, jsonLine)
 
         case Success(Arr(_)) =>
           logger.debug(s"Found array attributes in $json")
@@ -293,7 +293,8 @@ object Domain {
 
   final case class HexrayGotoStmt(code: String, label: HeaxrayNameExpr, attributes: HexrayAttributes) extends HexrayStmt
 
-  final case class HexrayLabelStmt(label: HeaxrayNameExpr, attributes: HexrayAttributes) extends HexrayStmt
+  final case class HexrayLabelStmt(label: HeaxrayNameExpr, stmts: List[HexrayStmt], attributes: HexrayAttributes)
+      extends HexrayStmt
 
   final case class HexrayHaltCompilerStmt(attributes: HexrayAttributes) extends HexrayStmt
 
@@ -1098,7 +1099,7 @@ object Domain {
 
   private def readExpr(json: Value): HexrayExpr = {
     json("nodeType").str match {
-      case "String"             => readString(json)
+      case "String"                    => readString(json)
       case "Number"                    => HexrayInt(json("value").toString, HexrayAttributes(json))
       case "Scalar_Encapsed"           => readEncapsed(json)
       case "Scalar_InterpolatedString" => readEncapsed(json)
@@ -1285,14 +1286,15 @@ object Domain {
 
     val ea        = json("target")("ea").str.toInt
     val treeindex = json("target")("treeindex").str.toInt
-    var label     = json("label").str
+    var label     = json("label")("name").str
 
     HexrayGotoStmt(code, HeaxrayNameExpr(label, HexrayAttributes(ea, treeindex)), HexrayAttributes(json))
   }
 
   private def readLabel(json: Value): HexrayLabelStmt = {
-    val name = readName(json("name"))
-    HexrayLabelStmt(name, HexrayAttributes(json))
+    val name  = readName(json("expr")("name"))
+    val stmts = json("stmts")("stmts").arr.toList.map(readStmt)
+    HexrayLabelStmt(name, stmts, HexrayAttributes(json))
   }
 
   private def readHaltCompiler(json: Value): HexrayHaltCompilerStmt = {

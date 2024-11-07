@@ -16,6 +16,7 @@ dependsOn(
   Projects.javasrc2cpg,
   Projects.jssrc2cpg,
   Projects.php2cpg,
+  Projects.ida2cpg,
   Projects.pysrc2cpg,
   Projects.rubysrc2cpg,
   Projects.swiftsrc2cpg,

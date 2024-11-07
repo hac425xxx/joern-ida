@@ -462,7 +462,9 @@ class AstCreator(filename: String, hexrayFile: HexrayFile, fileContent: Option[S
       .code(label)
       .lineNumber(line(stmt))
 
-    Ast(jumpTarget)
+    val bodyBlock    = blockNode(stmt)
+    val bodyStmtAsts = stmt.stmts.flatMap(astsForStmt)
+    Ast(bodyBlock).withChildren(Ast(jumpTarget) :: bodyStmtAsts)
   }
 
   private def astForNamespaceStmt(stmt: HexrayNamespaceStmt): Ast = {
@@ -1482,9 +1484,9 @@ class AstCreator(filename: String, hexrayFile: HexrayFile, fileContent: Option[S
     }
   }
 
-  protected def line(hexrayNode: HexrayNode): Option[Integer] = Option(hexrayNode.attributes.ea)
+  protected def line(hexrayNode: HexrayNode): Option[Integer] = Option(hexrayNode.attributes.rva)
 
-  protected def column(hexrayNode: HexrayNode): Option[Integer] = Option(hexrayNode.attributes.treeidx)
+  protected def column(hexrayNode: HexrayNode): Option[Integer] = Option(hexrayNode.attributes.jsonLine)
 
   protected def lineEnd(phpNode: HexrayNode): Option[Integer] = None
 
@@ -1493,7 +1495,7 @@ class AstCreator(filename: String, hexrayFile: HexrayFile, fileContent: Option[S
   protected def code(hexrayNode: HexrayNode): String = "" // Sadly, the Php AST does not carry any code fields
 
   override protected def offset(hexrayNode: HexrayNode): Option[(Int, Int)] = {
-    Option((hexrayNode.attributes.ea, hexrayNode.attributes.ea))
+    Option((hexrayNode.attributes.rva, hexrayNode.attributes.rva))
   }
 }
 

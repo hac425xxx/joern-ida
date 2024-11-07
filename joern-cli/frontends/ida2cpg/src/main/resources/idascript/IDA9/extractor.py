@@ -1,10 +1,15 @@
+import idapro
+import json
 import os
+import shutil
+import sys
+
 import ida_lines
 import ida_pro
+import ida_typeinf
 import idaapi
 import idautils
 import idc
-import json
 from PyQt5 import QtCore
 
 citem2str = {
@@ -92,6 +97,21 @@ citem2str = {
     idaapi.cit_goto: "cit_goto",  # goto-statement
     idaapi.cit_asm: "cit_asm",  # asm-statement
 }
+
+
+def get_struc(struct_tid) -> ida_typeinf.tinfo_t:
+    tif = ida_typeinf.tinfo_t()
+    if tif.get_type_by_tid(struct_tid):
+        if tif.is_struct():
+            return tif
+    return None
+
+
+def get_tinfo_by_tid(tid) -> ida_typeinf.tinfo_t:
+    tif = ida_typeinf.tinfo_t()
+    if tif.get_type_by_tid(tid):
+        return tif
+    return None
 
 
 def citem_to_str(c):
@@ -276,6 +296,17 @@ class AstNode:
         return n
 
     @staticmethod
+    def createLabelIdentNode(c: idaapi.citem_t, name, typ="void *"):
+        n = {
+            "nodeType": "LabelIdent",
+            "code": get_citem_name(c),
+            "attributes": AstNode.createAttr(c.ea, c.index),
+            "name": name,
+            "type": typ
+        }
+        return n
+
+    @staticmethod
     def createStringNode(c: idaapi.citem_t, value):
         n = {
             "nodeType": "String",
@@ -408,12 +439,13 @@ class AstNode:
 
     @staticmethod
     def createGotoNode(c: idaapi.citem_t, target: idaapi.citem_t, label):
+        label_name = "LABEL_{}".format(label)
         n = {
             "nodeType": "Goto",
             "code": get_citem_name(c),
             "attributes": AstNode.createAttr(c.ea, c.index),
             "target": AstNode.createAttr(target.ea, target.index),
-            "label": "LABEL_{}".format(label)
+            "label": AstNode.createLabelIdentNode(target, label_name),
         }
         return n
 
@@ -465,7 +497,7 @@ class AstNode:
         n = {
             "nodeType": "Call",
             "code": get_citem_name(c),
-
+            "type": c.type.dstr(),
             "attributes": AstNode.createAttr(c.ea, c.index),
             "name": name,
             "args": args
@@ -564,12 +596,14 @@ class AstNode:
         return n
 
     @staticmethod
-    def createLabelNode(c: idaapi.citem_t, label):
+    def createLabelNode(c: idaapi.citem_t, label, stmts):
+        label_name = "LABEL_{}".format(label)
         n = {
             "nodeType": "Label",
             "code": get_citem_name(c),
             "attributes": AstNode.createAttr(c.ea, c.index),
-            "name": "LABEL_{}".format(label),
+            "expr": AstNode.createLabelIdentNode(c, label_name),
+            "stmts": stmts
         }
         return n
 
@@ -584,9 +618,192 @@ class fake_citem_t:
         return self.code
 
 
+class IdaTypeResolver:
+    def __init__(self):
+        self.resolved_types = {}
+        self.basictype_map = {
+            idaapi.BT_INT8: "Int",
+            idaapi.BT_INT16: "Int",
+            idaapi.BT_INT32: "Int",
+            idaapi.BT_INT64: "Int",
+            idaapi.BT_INT128: "Int",
+            idaapi.BT_INT: "Int",
+            idaapi.BTF_BYTE: "Int",
+            idaapi.BTF_INT8: "Int",
+            idaapi.BTF_CHAR: "Int",
+            idaapi.BTF_UCHAR: "Int",
+            idaapi.BTF_UINT8: "Int",
+            idaapi.BTF_INT16: "Int",
+            idaapi.BTF_UINT16: "Int",
+            idaapi.BTF_INT32: "Int",
+            idaapi.BTF_UINT32: "Int",
+            idaapi.BTF_INT64: "Int",
+            idaapi.BTF_UINT64: "Int",
+            idaapi.BTF_INT128: "Int",
+            idaapi.BTF_UINT128: "Int",
+            idaapi.BTF_INT: "Int",
+            idaapi.BTF_UINT: "Int",
+            idaapi.BTF_SINT: "Int",
+            idaapi.BTF_BOOL: "Int",
+            idaapi.BTF_ENUM: "Int",
+            idaapi.BTF_FLOAT: "Float",
+            idaapi.BTF_DOUBLE: "Float",
+            idaapi.BTF_LDOUBLE: "Float",
+            idaapi.BTF_TBYTE: "Float",
+            idaapi.BT_UNK_BYTE: "Int",
+            idaapi.BT_UNK_WORD: "Int",
+            idaapi.BT_UNK_DWORD: "Int",
+            idaapi.BT_UNK_QWORD: "Int",
+            idaapi.BT_UNK_OWORD: "Int",
+            idaapi.BT_UNKNOWN: "Int",
+            idaapi.BTF_UNK: "Int",
+            idaapi.BT_FUNC: "Int",
+            idaapi.BTF_VOID: "Void",
+        }
+
+        self.function_signatures = {}
+
+    def parse_struct(self, typs, sid, is_union=False):
+
+        if is_union:
+            t = ida_typeinf.BTF_UNION
+        else:
+            t = ida_typeinf.BTF_STRUCT
+
+        members = []
+        name = idc.get_struc_name(sid)
+        til = ida_typeinf.get_idati()
+        tif = ida_typeinf.tinfo_t()
+        if not tif.get_named_type(til, name, t, True, False):
+            print(f"'{name}' is not a structure")
+            pass
+        else:
+            if tif.is_typedef():
+                rtid = ida_typeinf.get_named_type_tid(tif.get_final_type_name())
+                tif = get_tinfo_by_tid(rtid)
+                print("xxx {} --> {}".format(name, tif.dstr()))
+
+            udt = ida_typeinf.udt_type_data_t()
+            if tif.get_udt_details(udt):
+                idx = 0
+                # print(f'Listing the {name} structure {udt.size()} field names:')
+                for udm in udt:
+                    udm: ida_typeinf.udm_t
+                    # print(f'Field {idx}: {udm.name}')
+                    idx += 1
+
+                    m = {
+                        "name": udm.name,
+                        "type": self.parse_tinfo(udm.type),
+                    }
+                    members.append(m)
+
+        if tif.is_union():
+            xt = "Union"
+        else:
+            xt = "Struct"
+
+        r = {
+            "name": typs,
+            "type": xt,
+            "members": members
+        }
+        return r
+
+    def is_resolved_type(self, typs):
+        if self.resolved_types.get(typs) and self.resolved_types.get(typs)['type'] != "Unknown":
+            return True
+        return False
+
+    def parse_tinfo(self, ti: idaapi.tinfo_t):
+        typs = ti.dstr()
+
+        if self.is_resolved_type(typs):
+            return self.resolved_types.get(typs)
+
+        self.resolved_types[typs] = {"type": "<placehole>"}
+
+        real_type = ti.get_realtype()
+        full_type = idaapi.get_full_type(real_type)
+
+        r = {}
+        if self.basictype_map.get(full_type):
+            r = {
+                "name": typs,
+                "type": self.basictype_map.get(full_type)
+            }
+        elif full_type == idaapi.BT_ARRAY:
+            ai: idaapi.array_type_data_t = idaapi.array_type_data_t()
+            ti.get_array_details(ai)
+            r = {
+                "name": typs,
+                "type": "Array",
+                "elem_type": self.parse_tinfo(ai.elem_type),
+                "elem_count": ai.nelems,
+            }
+        elif full_type in [idaapi.BTF_STRUCT, idaapi.BTF_UNION]:
+            sid = idc.get_struc_id(typs)
+
+            # print("{}: 0x{:x}".format(typs, sid))
+            if sid == idaapi.BADADDR:
+                r = {
+                    "name": typs,
+                    "type": "Unknown",
+                }
+            else:
+                # print("parse member of {}".format(typs))
+                r = self.parse_struct(typs, sid, full_type == idaapi.BTF_UNION)
+        elif ti.is_ptr():
+            pointed = ti.get_pointed_object()
+            self.parse_tinfo(pointed)
+            r = {
+                "name": typs,
+                "type": "Pointer",
+                "pointed_type": pointed.dstr()
+            }
+
+        self.resolved_types[typs] = r
+        return r
+
+    def add_function_signature(self, name, arg_types: [], ret_type):
+
+        signame = ""
+        for at in arg_types:
+            signame += "({}),".format(at)
+
+        signame = signame[:-1] + ";"
+        signame += "({});signaturetype".format(ret_type)
+
+        r = {
+            "type": "function_signature",
+            "name": signame,
+            "function_name": name,
+            "param_types": arg_types,
+            "ret_type": ret_type
+        }
+        self.function_signatures[name] = r
+
+    def dump(self, path):
+
+        print("dump type to {}".format(path))
+        r = []
+        for k, v in self.resolved_types.items():
+            if v == {}:
+                continue
+            r.append(v)
+
+        for k, v in self.function_signatures.items():
+            r.append(v)
+
+        with open(path, "w") as fp:
+            fp.write(json.dumps(r, indent=4))
+
+
 class AstWalkDumper:
-    def __init__(self) -> None:
+    def __init__(self, typeResolver: IdaTypeResolver) -> None:
         self.stack = []
+        self.typeResolver = typeResolver
+        self.indirect_call_no = 0
 
     def push_item(self, c):
         self.stack.append(c)
@@ -603,7 +820,8 @@ class AstWalkDumper:
             print("stack: {}".format(citem_to_str(x)))
 
     def walk_func(self, ea: int):
-        fname = idaapi.get_name(ea)
+        fname = idaapi.get_name(ea).strip(".")
+        self.function_name = fname
         try:
             self.cfunc = idaapi.decompile(ea)
             if not self.cfunc:
@@ -639,13 +857,18 @@ class AstWalkDumper:
         param_idx = []
 
         params = []
+        param_types = []
         for a in self.cfunc.argidx:
             param_idx.append(a)
             lv = lvars[a]
+            self.typeResolver.parse_tinfo(lv.tif)
             type = str(lv.tif)
             var_name = lv.name
             vc = "{} {}".format(type, var_name)
             params.append(AstNode.createParameterNode(ea, var_name, type, vc))
+            param_types.append(type)
+
+        self.typeResolver.add_function_signature(fname, param_types, ret_type)
 
         locals = []
         for idx, lv in enumerate(lvars):
@@ -654,8 +877,13 @@ class AstWalkDumper:
                 continue
 
             # print(idx, lv.name)
+            self.typeResolver.parse_tinfo(lv.tif)
             type = str(lv.tif)
             var_name = lv.name
+
+            if var_name == "":
+                continue
+
             vc = "{} {}".format(type, var_name)
             locals.append(AstNode.createLocalDeclNode(ea, var_name, type, vc))
 
@@ -664,9 +892,20 @@ class AstWalkDumper:
 
     def walk_block(self, i: idaapi.cinsn_t):
         stmts = []
-        for i in i.cblock:
-            stmts.append(self.walk_insn(i))
-        n = AstNode.createBlockNode(i, stmts)
+        label_citem = None
+        idx = 0
+        for x in i.cblock:
+            if idx == 0:
+                if label_citem == None and x.label_num != -1:
+                    label_citem = x
+            stmts.append(self.walk_insn(x))
+            idx += 1
+
+        if label_citem:
+            n = AstNode.createLabelNode(label_citem, label_citem.label_num, AstNode.createBlockNode(i, stmts))
+            n = AstNode.createBlockNode(i, [n])
+        else:
+            n = AstNode.createBlockNode(i, stmts)
         return n
 
     def walk_return(self, i: idaapi.cinsn_t):
@@ -767,20 +1006,20 @@ class AstWalkDumper:
         return r
 
     def get_member_of_offset(self, t: idaapi.tinfo_t, off):
+        self.typeResolver.parse_tinfo(t)
         s = t.dstr()
-        sid = idaapi.get_struc_id(s)
+        sid = idc.get_struc_id(s)
 
         mn = "UNKNOWN"
 
         if sid == idaapi.BADADDR:
             return mn
 
-        struc: idaapi.struc_t = idaapi.get_struc(sid)
+        strut = get_struc(sid)
 
-        for i in range(struc.memqty):
-            member: idaapi.member_t = struc.members[i]
-            if off == member.get_soff():
-                mn = idaapi.get_member_name(member.id)
+        for (offset, name, size) in idautils.StructMembers(sid):
+            if off == offset:
+                mn = name
                 break
         return mn
 
@@ -817,8 +1056,8 @@ class AstWalkDumper:
 
     def walk_num_expr(self, e: idaapi.cexpr_t):
 
-        def get_fnum_str(x):
-            if hasattr(x, '_print'):
+        def get_fnum_str(x: idaapi.fnumber_t):
+            if not hasattr(x, 'fnum'):
                 return float(x._print())
             else:
                 return float(str(x.fnum))
@@ -858,7 +1097,16 @@ class AstWalkDumper:
         tf: idaapi.tinfo_t = idaapi.tinfo_t()
         idaapi.get_tinfo(tf, obj)
         typ = tf.dstr()
-        r = AstNode.createIdentifierNode(e, n, typ)
+        if typ == "?":
+            typ = "Int"
+
+        s: bytes = idc.get_strlit_contents(obj)
+        if idaapi.get_func(obj):
+            r = AstNode.createIdentifierNode(e, n, typ)
+        elif s:
+            r = AstNode.createStringNode(e, s.decode())
+        else:
+            r = AstNode.createIdentifierNode(e, n, typ)
         return r
 
     def walk_str_expr(self, e: idaapi.cexpr_t):
@@ -866,12 +1114,30 @@ class AstWalkDumper:
         r = AstNode.createStringNode(e, s)
         return r
 
+    def skip_cast(self, e: idaapi.cexpr_t):
+        while e.op == idaapi.cot_cast:
+            e = e.x
+        return e
+
     def walk_call_expr(self, e: idaapi.cexpr_t):
         args = []
+        arg_types = []
         for a in e.a:
+            arg_types.append(a.type.dstr())
             args.append(self.walk_expr(a))
 
-        target = self.walk_expr(e.x)
+        ret_type = e.type.dstr()
+        callee = self.skip_cast(e.x)
+        target = self.walk_expr(callee)
+
+        if not target.get("name"):
+            target["name"] = "unresloved_indirect_call_{}_{}".format(self.function_name, self.indirect_call_no)
+            self.indirect_call_no += 1
+            arg_types.insert(0, e.x.type.dstr())
+            args.insert(0, self.walk_expr(e.x))
+
+        self.typeResolver.add_function_signature(target['name'], arg_types, ret_type)
+
         r = AstNode.createCallNode(e, target, args)
         return r
 
@@ -962,8 +1228,9 @@ class AstWalkDumper:
             idaapi.cot_ref: self.walk_unary_expr,
         }
 
-        r = {}
+        self.typeResolver.parse_tinfo(e.type)
 
+        r = {}
         if expr_handler.get(e.op):
             handler = expr_handler[e.op]
             r = handler(e)
@@ -1012,9 +1279,7 @@ class AstWalkDumper:
         if insn_handler.get(i.op):
             handler = insn_handler[i.op]
             r = handler(i)
-            if i.label_num != -1:
-                l = AstNode.createLabelNode(i, i.label_num)
-                r = AstNode.createBlockNode(i, [l, r])
+
         else:
             raise Exception("walk insn failed: {}".format(citem_to_str(i)))
 
@@ -1026,8 +1291,8 @@ class AstWalkDumper:
 def skip_function(ea):
     n = idaapi.get_name(ea)
 
-    if n.startswith("."):
-        return True
+    # if n.startswith("."):
+    #     return True
 
     seg = idc.get_segm_name(ea)
     if seg in ["extern", ".plt"]:
@@ -1052,10 +1317,112 @@ class AstDumpThread(QtCore.QRunnable):
             f.write(d)
 
 
-if __name__ == "__main__":
+def rewrite_line_info(path):
+    outf = path + ".tmp"
+    lidx = 1
+    with open(outf, "w") as wf:
+        with open(path, "r") as f:
+            for l in f:
+                if "\"ea\": " in l:
+                    l = l.replace('"ea"', '"rva"').replace("\n", "")
+                    l = l + " \"ea\": \"{}\",\n".format(lidx)
+                elif "\"treeindex\"" in l:
+                    l = l.replace('"treeindex"', '"ctree_index"').replace("\n", "")
+                    l += ","
+                    l = l + " \"treeindex\": \"{}\"\n".format(lidx)
+                wf.write(l)
+                lidx += 1
+    shutil.move(outf, path)
+
+
+def merge_json_files(dir, base_fname, helper_json_file):
+    out = os.path.join(dir, "{}.json".format(base_fname))
+    print("[*] merge {}? to {}".format(base_fname, out))
+
+    of = open(out, "w")
+
+    of.write("[\n")
+
+    idx = 0
+    while True:
+        json_fname = os.path.join(dir, "{}_{}.json".format(base_fname, idx))
+        if not os.path.exists(json_fname):
+            break
+
+        if idx != 0:
+            of.write(",")
+        with open(json_fname, "r") as f:
+            lines = f.readlines()
+            of.writelines(lines[1:-1])
+        idx += 1
+
+    of.write(",")
+    with open(helper_json_file, "r") as f:
+        lines = f.readlines()
+        of.writelines(lines[1:-1])
+
+    of.write("]\n")
+    of.close()
+
+    rewrite_line_info(out)
+
+
+def merge_json_file(type_file, helper_type_json_file):
+    out = "{}.tmp".format(type_file)
+
+    of = open(out, "w")
+
+    of.write("[\n")
+
+    with open(type_file, "r") as f:
+        lines = f.readlines()
+        of.writelines(lines[1:-1])
+
+    of.write(",")
+    with open(helper_type_json_file, "r") as f:
+        lines = f.readlines()
+        of.writelines(lines[1:-1])
+
+    of.write("]\n")
+    of.close()
+
+    rewrite_line_info(out)
+
+    shutil.move(out, type_file)
+
+    print("[*] merge {} to {}".format(type_file, out))
+
+
+# https://gist.github.com/NyaMisty/693db2ce2e75c230f36b628fd7610852
+# 'Synchonize to idb' right click equivalent
+def resync_local_types():
+    def is_autosync(name, tif):
+        return tif.get_ordinal() != -1
+
+    for ord in range(1, ida_typeinf.get_ordinal_count(None)):
+        t = idaapi.tinfo_t()
+        t.get_numbered_type(None, ord)
+        typename = t.get_type_name()
+        if typename.startswith('#'):
+            continue
+
+        autosync = is_autosync(typename, t)
+        # print('Processing struct %d: %s%s' % (ord, typename, ' (autosync) ' if autosync else ''))
+        idc.import_type(-1, typename)
+        if autosync:
+            continue
+        struc: ida_typeinf.tinfo_t = get_struc(idc.get_struc_id(typename))
+        if not struc:
+            continue
+        struc.save_type()
+
+def do_idapython_work():
     print("[*] in astdumper script!")
 
     idc.auto_wait()
+
+    resync_local_types()
+
     need_exit = False
     # print(idc.ARGV)
     if len(idc.ARGV) > 1:
@@ -1065,6 +1432,10 @@ if __name__ == "__main__":
     input_file = idaapi.get_input_file_path()
     outdir = os.path.join(os.path.dirname(input_file), "out")
     base_name = os.path.basename(input_file)
+
+    script_dir = os.path.dirname(__file__)
+    helper_json = os.path.join(script_dir, "helper.so.json")
+    helper_type_json = os.path.join(script_dir, "helper.so.type.json")
 
     if not os.path.exists(outdir):
         os.mkdir(outdir)
@@ -1077,9 +1448,11 @@ if __name__ == "__main__":
         funcs.append(ea)
 
     # i = funcs.index(0x4d3d35)
-    # funcs = funcs[i:]
+    # funcs = [idaapi.get_name_ea(-1, "array_oob_from_buffer4")]
 
     print("[*] total function: {}".format(len(funcs)))
+
+    typeResolver = IdaTypeResolver()
 
     part_num = 100
     part_idx = 0
@@ -1087,7 +1460,7 @@ if __name__ == "__main__":
     asts = []
     for ea in funcs:
         # print("walk 0x{:x}".format(ea))
-        x = AstWalkDumper()
+        x = AstWalkDumper(typeResolver)
         try:
             r = x.walk_func(ea)
             if not r:
@@ -1109,7 +1482,29 @@ if __name__ == "__main__":
     print("[*] wait thread exit.")
     threadpool.waitForDone()
 
+    merge_json_files(outdir, base_name, helper_json)
+
+    for x in idautils.Structs():
+
+        n = x[2]
+        sid = x[1]
+
+        if typeResolver.is_resolved_type(n):
+            print("already resolve type: {}".format(n))
+            print(typeResolver.resolved_types.get(n))
+            continue
+
+        typeResolver.resolved_types[n] = typeResolver.parse_struct(n, sid)
+
+    type_json_file = os.path.join(outdir, "{}.type.json".format(base_name))
+    typeResolver.dump(type_json_file)
+
+    merge_json_file(type_json_file, helper_type_json)
+
     print("[*] All Done!")
 
-    if need_exit:
-        idc.qexit(0)
+if __name__ == "__main__":
+    # idapro.enable_console_messages(True)
+    idapro.open_database(sys.argv[1], True)
+    do_idapython_work()
+    idapro.close_database()

@@ -35,6 +35,7 @@ package object cpgcreation {
       case Languages.KOTLIN    => Some(KotlinCpgGenerator(conf, rootPath))
       case Languages.RUBYSRC   => Some(RubyCpgGenerator(conf, rootPath))
       case Languages.SWIFTSRC  => Some(SwiftSrcCpgGenerator(conf, rootPath))
+      case "IDA"               => Some(IdaCpgGenerator(conf, rootPath))
       case _                   => None
     }
   }

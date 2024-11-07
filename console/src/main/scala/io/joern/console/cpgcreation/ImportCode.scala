@@ -62,6 +62,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T]) extends Rep
   def csharp: Frontend          = new BinaryFrontend("csharp", Languages.CSHARP, "C# Source Frontend (Roslyn)")
   def llvm: Frontend            = new BinaryFrontend("llvm", Languages.LLVM, "LLVM Bitcode Frontend")
   def php: SourceBasedFrontend  = new SourceBasedFrontend("php", Languages.PHP, "PHP source frontend", "php")
+  def ida: SourceBasedFrontend  = new SourceBasedFrontend("ida", "IDA", "IDA Hexray AST frontend", "json")
   def ruby: SourceBasedFrontend = new RubyFrontend("Ruby source frontend", false)
   def rubyDeprecated: SourceBasedFrontend = new RubyFrontend("Ruby source deprecated frontend", true)
 
@@ -79,6 +80,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T]) extends Rep
       golang,
       llvm,
       php,
+      ida,
       python,
       csharp,
       ruby,

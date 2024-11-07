@@ -15,7 +15,6 @@ import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 import scala.util.matching.Regex
 
-
 class Ida2Cpg extends X2CpgFrontend[Config] {
 
   private val logger = LoggerFactory.getLogger(this.getClass)
@@ -27,17 +26,5 @@ class Ida2Cpg extends X2CpgFrontend[Config] {
       new MetaDataPass(cpg, Languages.C, config.inputPath).createAndApply()
       new AstCreationPass(config, cpg, parser.get)(config.schemaValidation).createAndApply()
     }
-  }
-
-  private def buildFiles(config: Config): List[String] = {
-    SourceFiles
-      .determine(
-        config.inputPath,
-        Set(".json"),
-        Option(config.defaultIgnoredFilesRegex),
-        Option(config.ignoredFilesRegex),
-        Option(config.ignoredFiles)
-      )
-      .filter(_.endsWith("composer.json"))
   }
 }
